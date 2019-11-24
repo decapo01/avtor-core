@@ -26,11 +26,12 @@ pub struct UserId {
     pub id : Uuid
 }
 
+#[derive(Clone)]
 pub struct Username {
     pub value : String
 }
 
-#[derive(Debug, Validate, Deserialize)]
+#[derive(Debug, Validate, Deserialize, Clone)]
 pub struct Email {
     #[validate(email)]
     pub value : String
@@ -133,17 +134,17 @@ pub struct EmailSentErr {
     logs : Vec<Log>
 }
 
+pub struct UserDeletedOk {}
+
+pub struct UserDeletedErr {}
+
 pub struct RegisterWithEmailAndConfirmPasswordReq {
     pub dto                : RegisterWithEmailAndConfirmPasswordDto,
     pub find_user_by_email : fn () -> Result<FindAllUsersOk,FindUserByEmailErr>,
-    pub hash_password      : fn (UnhashedPassword) -> Result<HashedPassword,PasswordHashError>,
-    pub insert_user        : fn (User) -> Result<InsertUserOk,InsertUserErr>,
-    pub send_verification  : fn (Email) -> Result<EmailSentOk,EmailSentErr>,
+    pub hash_password      : fn (&UnhashedPassword) -> Result<HashedPassword,PasswordHashError>,
+    pub insert_user        : fn (&User) -> Result<InsertUserOk,InsertUserErr>,
+    pub send_verification  : fn (&Email) -> Result<EmailSentOk,EmailSentErr>,
     pub delete_user        : fn (&UserId) -> Result<UserDeletedOk,UserDeletedErr>
-}
-
-pub struct RegistrationOk {
-    pub log_msg : LogMsg
 }
 
 pub struct RegisterSuperUserReq {
@@ -155,19 +156,28 @@ pub enum RegisterUserRequest {
     RegisterSuperUser(RegisterSuperUserReq)
 }
 
+pub struct RegistrationOk {
+    pub log_msg : LogMsg
+}
 
 pub enum RegistrationErr {
     InvalidEmailAndPassword,
-
+    InvalidEmail,
+    InvalidPassword,
+    RepositoryError,
+    UserExists,
+    ProblemHashingPassword,
+    ProblemInserting,
+    CouldNotSendVerificationEmail
 }
 
 pub fn register_user_with_email_and_confirmation_password(req : RegisterWithEmailAndConfirmPasswordReq) -> Result<RegistrationOk,RegistrationErr> {
 
-    match (req.dto.username.validate(),req.dto.password.validate()) {
+    match (req.dto.username.validate(), req.dto.password.validate()) {
         (Err(invalid_email),Err(invalid_pass)) => Err(RegistrationErr::InvalidEmailAndPassword),
-        (Err(invalid_email),_) => Err(RegistrationErr::InvalidEmail),
-        (_,Err(invalid_pass)) => Err(RegistrationErr::InvalidPassword),
-        (Ok(valid_email),Ok(valid_pass)) => {
+        (Err(invalid_email),_)  => Err(RegistrationErr::InvalidEmail),
+        (_,Err(invalid_pass))   => Err(RegistrationErr::InvalidPassword),
+        (Ok(valid_email),Ok(_)) => {
 
             let users_res = (req.find_user_by_email)();
 
@@ -183,30 +193,44 @@ pub fn register_user_with_email_and_confirmation_password(req : RegisterWithEmai
 
             match user_opt_res {
                 Err(_) => Err(RegistrationErr::RepositoryError),
-                Ok(users) => Err(RegistrationErr::UserExists),
+                Ok(Some(_)) => Err(RegistrationErr::UserExists),
                 Ok(None) => {
                     
-                    let hashed_password_res = (req.hash_password)(valid_pass);
+                    let hashed_password_res = (req.hash_password)(&req.dto.password);
 
                     match hashed_password_res {
                         Err(_) => Err(RegistrationErr::ProblemHashingPassword),
                         Ok(hashed_password) => {
 
-                            let user = User { id : Uuid.random_uuid() , email : valid_pass , hashed_password : hashed_password };
+                            let username = Username { value : req.dto.username.clone().value };
 
-                            let insert_res = (req.insert_user)(user);
+                            let user_id = UserId { id : Uuid::new_v4() };
+
+                            let account_id = AccountId { id : Uuid::new_v4() };
+
+                            let user = User {
+                                id        : user_id, 
+                                username  : username , 
+                                password  : hashed_password , 
+                                accountId : account_id 
+                            };
+
+                            let insert_res = (req.insert_user)(&user);
 
                             match insert_res {
                                 Err(_) => Err(RegistrationErr::ProblemInserting),
                                 Ok(_) => {
 
-                                    match (req.send_verification)(user.email.clone()) {
+                                    match (req.send_verification)(&req.dto.username) {
                                         Err(_) => {
                                             (req.delete_user)(&user.id);
                                             Err(RegistrationErr::CouldNotSendVerificationEmail)
                                         },
                                         Ok(_) => {
-                                            Ok(RegistrationOk)
+
+                                            let log_msg = LogMsg { msg : "User Registered Ok".to_string() };
+
+                                            Ok(RegistrationOk{ log_msg: log_msg })
                                         }
                                     }
                                 }

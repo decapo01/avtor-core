@@ -243,6 +243,86 @@ pub fn register_user_with_email_and_confirmation_password(req : RegisterWithEmai
     }
 }
 
+pub struct LoginDto {
+    pub email   : String,
+    pub pass    : String,
+    pub ip_addr : String,
+}
+
+
+
+pub struct LoginAttempt {
+    pub email        : String,
+    pub ip_addr      : String,
+    pub is_success   : bool,
+    pub failure_mode : LoginFailure
+}
+
+pub struct InsertLoginAttemptOk {
+    pub log : Log
+}
+
+pub struct InsertLoginAttemptEr {
+    pub log : Log
+}
+
+pub struct LoginReq {
+    pub login_dto            : LoginDto,
+    pub timestamp            : String,
+    pub verify_hash          : fn (&String) -> bool,
+    pub find_user_by_email   : fn (&String) -> Result<Option<User>,RepoReadErr>,
+    pub insert_login_attempt : fn (&LoginAttempt) -> Result<InsertLoginAttemptOk,InsertLoginAttemptEr>
+}
+
+
+pub enum LoginFailure {
+    RepoErr(Log),
+    EmailNotFound(Log),
+    PasswordIncorrect(Log)
+}
+
+pub struct LoginSuccess {
+    pub log     : Log,
+    pub session : String
+}
+
+pub fn email_not_found_log(timestamp: &String) -> Log { 
+    Log { 
+        severity  : LogSeverity::Warn , 
+        msg       : "Login attempt with invalid username.".to_string(),
+        timestamp : timestamp.to_string(),
+    }
+}
+
+pub fn repo_err_log(timestamp: &String) -> Log {
+    Log {
+        severity  : LogSeverity::Error,
+        msg       : "Repo Error".to_string(),
+        timestamp : timestamp.to_string(),
+    }
+}
+
+pub fn login(req : &LoginReq) -> Result<LoginSuccess,LoginFailure> {
+
+    let user_res_opt = (req.find_user_by_email)(&req.login_dto.email);
+
+    match user_res_opt {
+        Err(_)      => Err(LoginFailure::RepoErr(repo_err_log(&req.timestamp))),
+        Ok(Some(_)) => Err(LoginFailure::EmailNotFound(email_not_found_log(&req.timestamp))),
+        Ok(None)    => {
+
+            let log =
+                Log {
+                    severity  : LogSeverity::Info,
+                    msg       : "".to_string(),
+                    timestamp : (&req.timestamp).to_string(),
+                };
+
+            Ok(LoginSuccess { log : log, session : "".to_string() })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
